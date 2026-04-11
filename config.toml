@@ -1,0 +1,53 @@
+# Iberdrola Datathon: Central Configuration File
+
+[execution]
+# Steps to run: ["all"] or a list like ["charging", "traffic"]
+# Available steps: charging, registrations, capacity, traffic, segments, proximity
+steps = ["proximity"]
+# If true, rerun all selected steps even if output files exist
+force = true
+
+[steps.charging]
+url = "https://infocar.dgt.es/datex2/v3/miterd/EnergyInfrastructureTablePublication/electrolineras.xml"
+raw_path = "data/raw/charging_points/charging_points.xml"
+output_path = "data/processed/charging_points.parquet"
+depends_on = []
+
+[steps.registrations]
+ano_inicio = 2015
+mes_inicio = 1
+# ano_fin and mes_fin will default to current date if set to null
+ano_fin = 2025
+mes_fin = 12
+raw_dir = "data/raw/ev/zip"
+output_path = "data/processed/ev_registrations.parquet"
+depends_on = []
+
+[steps.capacity]
+raw_dir = "data/raw/electric_capacity"
+output_path = "data/processed/electric_capacity_merged.parquet"
+files = { Endesa = "Endesa_2026_04_01.xlsx", Iberdrola = "Iberdrola_2026_04_01.xlsx", Viesgo = "Viesgo_2026_04_01.xlsx" }
+depends_on = []
+
+[steps.traffic]
+raw_dir = "data/raw/road_routes/informacion_tramo"
+output_path = "data/processed/road_routes_traffic.parquet"
+depends_on = []
+
+[steps.segments]
+shp_path = "data/raw/road_routes/geometria/Geometria_tramos.shp"
+traffic_path = "data/processed/road_routes_traffic.parquet"
+kmz_path = "data/raw/roads/query.kmz"
+output_path = "data/processed/integrated_road_network.parquet"
+small_segment_length_m = 2000
+bridge_gap_threshold_m = 1000
+parallel_threshold_m = 100
+# This step strictly depends on the traffic merge step's output
+depends_on = ["data/processed/road_routes_traffic.parquet"]
+
+[steps.proximity]
+charging_points_path = "data/processed/charging_points.parquet"
+road_network_path = "data/processed/integrated_road_network.parquet"
+output_path = "data/processed/charging_stations.parquet"
+max_distance = 1000  # Distance in meters
+depends_on = ["data/processed/charging_points.parquet", "data/processed/integrated_road_network.parquet"]
