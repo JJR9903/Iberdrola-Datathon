@@ -13,12 +13,23 @@ wheels/
 .venv
 
 # Data and large files
-# These are excluded because they exceed GBs in size
-data/
+# Ignore everything in data/
+data/**
+# But allow the directory structure itself
+!data/**/
+# Allow .gitkeep files so the scaffolding shows up in Git
+!data/**/.gitkeep
+# Explicitly allow the Iberdrola capacity dataset (cannot be automated)
+!data/raw/electric_capacity/Iberdrola_2026_04_01.xlsx
+
+# Global exclusions for large file types
 *.csv
 *.parquet
 *.pdf
 *.html
+*.zip
+*.gz
+*.kmz
 
 # Other directories
 scratch/

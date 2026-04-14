@@ -1,35 +1,36 @@
 import polars as pl
 import geopandas as gpd
-from shapely import wkb
 import os
 import time
 
 def main(
     charging_points_path="data/processed/charging_points.parquet",
     road_network_path="data/processed/integrated_road_network.parquet",
+    backbone_roads_path="data/processed/backbone_roads.parquet",
     output_path="data/processed/charging_stations.parquet",
     max_distance=1000
 ):
     """
     Filters high-power EV charging sites, groups them by site_id, and calculates
-    the distance to the nearest road backbone.
+    proximity to road segments and backbone roads.
     
     Args:
         charging_points_path: Path to the input charging points parquet.
-        road_network_path: Path to the input integrated road network parquet.
+        road_network_path: Path to the input integrated road network parquet (segments).
+        backbone_roads_path: Path to the input backbone roads parquet.
         output_path: Path to save the final results.
-        max_distance: Maximum distance (in meters) to allow for a site to be kept.
+        max_distance: Maximum distance (in meters) to a segment to allow for a site to be kept.
     """
     start_time = time.time()
     
+    # 1. Load and aggregate charging points
     print(f"Loading charging points from {charging_points_path}...")
-    # 1. Load and filter charging points
     df_full = pl.read_parquet(charging_points_path)
     
     # Filter for max_power >= 100000
     df_full = df_full.filter(pl.col('max_power') >= 100000)
     
-    # 2. Group by site_id with requested aggregations
+    # Group by site_id with requested aggregations
     df_sites = df_full.group_by("site_id").agg([
         pl.col("site_name").first(),
         pl.col("latitude").first(),
@@ -44,7 +45,7 @@ def main(
     
     print(f"Filtered to {df_sites.height} high-power sites. Converting to GeoPandas...")
     
-    # 3. Convert to GeoPandas
+    # Convert to GeoPandas
     df_sites_pd = df_sites.to_pandas()
     gdf_sites = gpd.GeoDataFrame(
         df_sites_pd,
@@ -52,44 +53,58 @@ def main(
         crs="EPSG:4326"
     )
     
-    # Project to metric CRS for distance calculation
+    # Project to metric CRS (standard for the project is 3042)
     gdf_sites = gdf_sites.to_crs(epsg=3042)
     
-    print(f"Loading road network from {road_network_path}...")
-    # 4. Load road network
-    df_roads = pl.read_parquet(road_network_path)
+    # 2. Distance to Segments & Initial Filter
+    print(f"Loading road segments from {road_network_path}...")
+    # Using gpd.read_parquet as requested by the user
+    gdf_roads = gpd.read_parquet(road_network_path)
+    if gdf_roads.crs is None:
+        gdf_roads.set_crs(3042, inplace=True)
     
-    # Convert binary WKB to shapely geometries
-    df_roads_pd = df_roads.to_pandas()
-    df_roads_pd['geometry'] = df_roads_pd['geometry'].apply(wkb.loads)
-    
-    gdf_roads = gpd.GeoDataFrame(df_roads_pd, geometry='geometry', crs="EPSG:3042")
-    
-    print("Calculating distance to nearest road...")
-    # 5. Calculate closest distance
+    print("Calculating distance to nearest road segment...")
+    # sjoin_nearest to get nearest segment and distance
     gdf_sites = gpd.sjoin_nearest(
         gdf_sites,
-        gdf_roads[['backbone_id', 'geometry']],
+        gdf_roads[['segment_id', 'geometry']],
         how="left",
-        distance_col="distance_to_road_m"
+        distance_col="distance_to_segment_m"
     )
     
-    # sjoin_nearest might create duplicates if multiple roads are at the same minimum distance
+    # Drop duplicates (if a point is equidistant to multiple segments) and remove index_right
     gdf_sites = gdf_sites.drop_duplicates(subset=['site_id'])
-    
-    # Remove the index_right column added by sjoin
     if 'index_right' in gdf_sites.columns:
         gdf_sites = gdf_sites.drop(columns=['index_right'])
     
-    # 6. Filter by max_distance
-    print(f"Filtering sites further than {max_distance}m from road network...")
+    # Filter by max_distance to segments
+    print(f"Filtering sites further than {max_distance}m from road segments...")
     initial_count = len(gdf_sites)
-    gdf_sites = gdf_sites[gdf_sites['distance_to_road_m'] <= max_distance].copy()
+    gdf_sites = gdf_sites[gdf_sites['distance_to_segment_m'] <= max_distance].copy()
     final_count = len(gdf_sites)
+    print(f"Kept {final_count} out of {initial_count} sites based on segment distance.")
     
-    print(f"Kept {final_count} out of {initial_count} sites based on distance filter.")
+    # 3. Link to Backbone Roads
+    print(f"Loading backbone roads from {backbone_roads_path}...")
+    gdf_backbones = gpd.read_parquet(backbone_roads_path)
+    if gdf_backbones.crs is None:
+        gdf_backbones.set_crs(3042, inplace=True)
+        
+    print("Linking stations to nearest backbone road...")
+    # sjoin_nearest to get nearest backbone and distance
+    gdf_sites = gpd.sjoin_nearest(
+        gdf_sites,
+        gdf_backbones[['backbone_id', 'geometry']],
+        how="left",
+        distance_col="distance_to_backbone_m"
+    )
     
-    # 7. Save results
+    # Drop duplicates and index_right
+    gdf_sites = gdf_sites.drop_duplicates(subset=['site_id'])
+    if 'index_right' in gdf_sites.columns:
+        gdf_sites = gdf_sites.drop(columns=['index_right'])
+        
+    # 4. Save results
     print(f"Saving results to {output_path}...")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     gdf_sites.to_parquet(output_path)

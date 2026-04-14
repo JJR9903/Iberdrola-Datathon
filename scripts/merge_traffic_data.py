@@ -10,8 +10,8 @@ def main(
 ):
     """
     Consolidates traffic data from multiple daily CSV files into a single Parquet file.
-    Each input file expected columns: 'tramo' and 'total'.
-    Output: 'tramo' column + 'total_YYYYMMDD' for each date found.
+    Each input file expected columns: 'tramo', 'total', 'corto'.
+    Output: 'tramo' column + daily metrics (total, corto, not_short, pct_not_short) + global max summaries.
     """
     print("\n=== Merging Traffic Data Datasets ===")
     
@@ -49,7 +49,14 @@ def main(
             df = pl.scan_csv(file_path, separator=';') \
                 .select([
                     pl.col("tramo").cast(pl.Utf8),
-                    pl.col("total").alias(total_col_name)
+                    pl.col("total").alias(total_col_name),
+                    pl.col("corto").alias(f"corto_{date_str}")
+                ]) \
+                .with_columns([
+                    (pl.col(total_col_name) - pl.col(f"corto_{date_str}")).alias(f"not_short_{date_str}")
+                ]) \
+                .with_columns([
+                    (pl.col(f"not_short_{date_str}") / pl.col(total_col_name)).fill_nan(0).alias(f"pct_not_short_{date_str}")
                 ])
             dfs.append(df)
         except Exception as e:
@@ -75,10 +82,24 @@ def main(
         # Collect the lazy computation
         df_final = merged.collect()
         
-        # Fill nulls with 0 for all traffic columns
-        traffic_cols = [c for c in df_final.columns if c.startswith("total_")]
+        # Fill nulls with 0 for all traffic-related columns
+        traffic_related_prefixes = ["total_", "corto_", "not_short_", "pct_not_short_"]
+        traffic_related_cols = [c for c in df_final.columns if any(c.startswith(p) for p in traffic_related_prefixes)]
+        
         df_final = df_final.with_columns([
-            pl.col(c).fill_null(0) for c in traffic_cols
+            pl.col(c).fill_null(0) for c in traffic_related_cols
+        ])
+        
+        # Calculate Global Summary Columns (Max Demand)
+        # We use max_horizontal across all dates to account for seasonality
+        total_cols = [c for c in df_final.columns if c.startswith("total_")]
+        not_short_cols = [c for c in df_final.columns if c.startswith("not_short_")]
+        
+        df_final = df_final.with_columns([
+            pl.max_horizontal(total_cols).alias("total_max"),
+            pl.max_horizontal(not_short_cols).alias("not_short_max")
+        ]).with_columns([
+            (pl.col("not_short_max") / pl.col("total_max")).fill_nan(0).alias("pct_not_short_max")
         ])
         
         # Ensure output directory exists

@@ -7,8 +7,11 @@ from pathlib import Path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'scripts'))
 
 try:
-    import extract_ev_charging_points
-    import extract_ev_registrations
+    import download_ev_charging_points
+    import download_ev_registrations
+    import download_electric_capacity
+    import download_roads_kmz
+    import download_road_routes
     import process_electric_capacity
     import merge_traffic_data
     import process_road_segments
@@ -52,18 +55,46 @@ def run_step(step_name, config, force=False):
     print(f"\n>>> Executing Step: {step_name}")
     
     try:
-        if step_name == "charging":
-            extract_ev_charging_points.main(
-                url=step_config['url'],
+        if step_name == "download":
+            # 1. Roads Network KMZ
+            download_roads_kmz.main(
+                url=step_config['roads_kmz_url'],
+                output_path=step_config['roads_kmz_path']
+            )
+            # 2. Electric Capacity
+            download_electric_capacity.main(
+                datasets=step_config['capacity_datasets']
+            )
+            # 3. Road Routes
+            download_road_routes.main(
+                base_dir=step_config['road_routes_raw_dir'],
+                geom_url_base=step_config['road_routes_geom_url'],
+                info_url_base=step_config['road_routes_info_url'],
+                info_files=step_config['road_routes_info_files']
+            )
+            # 4. EV Charging Points
+            download_ev_charging_points.main(
+                url=step_config['charging_url'],
+                raw_xml_path=step_config['charging_raw_path'],
+                parquet_output_path=step_config['charging_output_path']
+            )
+            # 5. EV Registrations
+            download_ev_registrations.main(
+                ano_inicio=step_config['registrations_ano_inicio'],
+                mes_inicio=step_config['registrations_mes_inicio'],
+                ano_fin=step_config.get('registrations_ano_fin'),
+                mes_fin=step_config.get('registrations_mes_fin'),
+                dir_zip=step_config['registrations_raw_dir'],
+                output_parquet=step_config['registrations_output_path']
+            )
+        elif step_name == "charging":
+            # Note: Charging download+process is currently bundled in the script's main
+            download_ev_charging_points.main(
                 raw_xml_path=step_config['raw_path'],
                 parquet_output_path=step_config['output_path']
             )
         elif step_name == "registrations":
-            extract_ev_registrations.main(
-                ano_inicio=step_config['ano_inicio'],
-                mes_inicio=step_config['mes_inicio'],
-                ano_fin=step_config.get('ano_fin'),
-                mes_fin=step_config.get('mes_fin'),
+            download_ev_registrations.main(
                 dir_zip=step_config['raw_dir'],
                 output_parquet=step_config['output_path']
             )
@@ -84,14 +115,14 @@ def run_step(step_name, config, force=False):
                 traffic_path=step_config['traffic_path'],
                 kmz_path=step_config['kmz_path'],
                 output_path=step_config['output_path'],
-                small_segment_length_m=step_config['small_segment_length_m'],
-                bridge_gap_threshold_m=step_config['bridge_gap_threshold_m'],
-                parallel_threshold_m=step_config['parallel_threshold_m']
+                backbone_output_path=step_config['backbone_output_path'],
+                small_segment_length_m=step_config['small_segment_length_m']
             )
         elif step_name == "proximity":
             analyze_charging_sites_proximity.main(
                 charging_points_path=step_config['charging_points_path'],
                 road_network_path=step_config['road_network_path'],
+                backbone_roads_path=step_config['backbone_roads_path'],
                 output_path=step_config['output_path'],
                 max_distance=step_config['max_distance']
             )
@@ -116,7 +147,7 @@ def main():
     force_run = execution.get('force', False)
 
     # Definitive order of steps
-    canonical_order = ["charging", "registrations", "capacity", "traffic", "segments", "proximity"]
+    canonical_order = ["download", "charging", "registrations", "capacity", "traffic", "segments", "proximity"]
     
     # Resolve which steps to run
     if "all" in steps_requested:

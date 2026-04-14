@@ -1,164 +1,246 @@
 import geopandas as gpd
 import pandas as pd
 import fiona
-import networkx as nx
-from shapely.geometry import MultiLineString, LineString
-from shapely.ops import unary_union, linemerge
+import numpy as np
+from shapely.geometry import Point
+from shapely.ops import substring
+import shapely
 import os
 import time
+from joblib import Parallel, delayed
 
 # Enable KML driver
 fiona.drvsupport.supported_drivers['KML'] = 'rw'
+
+def process_backbone_group(bib_id, group, backbone_geom, traffic_cols, 
+                           fusion_small_segment_m=1000, fusion_gap_threshold_m=0):
+    """
+    Core logic to simplify segments on a single backbone using Sequential Greedy Fusion.
+    Includes a second pass for Contiguity Fusion (joining short neighbors).
+    """
+    if group.empty:
+        return []
+        
+    # 1. SORT: Order by start mile-marker
+    group = group.sort_values('start_m').reset_index(drop=True)
+    
+    # 2. PASS 1: OVERLAP FUSION (Islands)
+    islands = []
+    current_island_indices = [0]
+    current_max_end = group.loc[0, 'end_m']
+    
+    for i in range(1, len(group)):
+        if group.loc[i, 'start_m'] < current_max_end:
+            current_island_indices.append(i)
+            current_max_end = max(current_max_end, group.loc[i, 'end_m'])
+        else:
+            islands.append(current_island_indices)
+            current_island_indices = [i]
+            current_max_end = group.loc[i, 'end_m']
+    islands.append(current_island_indices)
+    
+    initial_results = []
+    for idx_list in islands:
+        subset = group.iloc[idx_list]
+        island_start = subset['start_m'].min()
+        island_end = subset['end_m'].max()
+        island_len = island_end - island_start
+        
+        if island_len <= 1e-3: continue
+            
+        final_traffic = {}
+        for col in traffic_cols:
+            total_vehicle_demand = (subset[col] * subset['interval_len']).sum()
+            final_traffic[col] = total_vehicle_demand / island_len
+            
+        try:
+            final_geom = substring(backbone_geom, island_start, island_end)
+        except Exception:
+            final_geom = subset.geometry.iloc[0]
+            
+        entry = {
+            'backbone_id': bib_id,
+            'geometry': final_geom,
+            'length_m': final_geom.length if final_geom else 0,
+            'master_start_m': island_start,
+            'master_end_m': island_end,
+            'original_segment_count': len(subset)
+        }
+        entry.update(final_traffic)
+        initial_results.append(entry)
+
+    # 3. PASS 2: CONTIGUITY FUSION (Join small continuous segments)
+    if len(initial_results) <= 1:
+        return initial_results
+        
+    consolidated = []
+    curr = initial_results[0]
+    
+    for i in range(1, len(initial_results)):
+        nxt = initial_results[i]
+        
+        gap = nxt['master_start_m'] - curr['master_end_m']
+        is_small = (curr['length_m'] < fusion_small_segment_m) or (nxt['length_m'] < fusion_small_segment_m)
+        
+        if gap <= fusion_gap_threshold_m and is_small:
+            # MERGE: Recalculate weighted traffic
+            new_start = curr['master_start_m']
+            new_end = nxt['master_end_m']
+            total_new_len = curr['length_m'] + nxt['length_m']
+            
+            if total_new_len > 0:
+                for col in traffic_cols:
+                    total_demand = (curr[col] * curr['length_m']) + (nxt[col] * nxt['length_m'])
+                    curr[col] = total_demand / total_new_len
+            
+            try:
+                curr['geometry'] = substring(backbone_geom, new_start, new_end)
+            except:
+                pass
+                
+            curr['length_m'] = curr['geometry'].length
+            curr['master_end_m'] = new_end
+            curr['original_segment_count'] += nxt['original_segment_count']
+        else:
+            consolidated.append(curr)
+            curr = nxt
+    
+    consolidated.append(curr)
+    return consolidated
 
 def main(
     shp_path="./data/raw/road_routes/geometria/Geometria_tramos.shp",
     traffic_path="./data/processed/road_routes_traffic.parquet",
     kmz_path="./data/raw/roads/query.kmz",
     output_path="./data/processed/integrated_road_network.parquet",
+    backbone_output_path="./data/processed/backbone_roads.parquet",
     small_segment_length_m=2000,
-    bridge_gap_threshold_m=1000,
-    parallel_threshold_m=100
+    fusion_small_segment_m=1000,
+    fusion_gap_threshold_m=0,
+    target_traffic_column="total_max"
 ):
     start_time = time.time()
-    print("Loading data...")
-    # Load Shapefile
+    print(f"🚀 Starting Road network processing (Target: {target_traffic_column})...")
+    
+    # 1. LOAD DATA
+    print("Loading datasets...")
     gdf_segments = gpd.read_file(shp_path)
     if gdf_segments.crs is None:
         gdf_segments.set_crs(3042, inplace=True)
     
-    print(f"Loaded {len(gdf_segments)} segments. Loading traffic data...")
-    # Load Consolidated Traffic Data
     df_info = pd.read_parquet(traffic_path)
     
-    # Identify all traffic columns to keep
-    traffic_cols = [c for c in df_info.columns if c.startswith('total_')]
-    if not traffic_cols:
-        print("Warning: No 'total_YYYYMMDD' columns found.")
+    # Selection of traffic columns for processing
+    if target_traffic_column not in df_info.columns:
+        print(f"Warning: {target_traffic_column} not found. Defaulting to 'total_max'.")
+        target_traffic_column = "total_max"
+        
+    # Pick up target total and its corresponding not_short column
+    base_name = target_traffic_column.replace("total_", "")
+    not_short_col = f"not_short_{base_name}"
+    
+    traffic_cols = [target_traffic_column]
+    if not_short_col in df_info.columns:
+        traffic_cols.append(not_short_col)
+    
+    print(f" - Processing traffic columns: {traffic_cols}")
     
     gdf_segments['id_tramo'] = gdf_segments['id_tramo'].astype(str)
     df_info['tramo'] = df_info['tramo'].astype(str)
     
-    print("Loading KMZ backbones...")
-    # Load KMZ as backbone reference
+    # 2. BACKBONE PROCESSING
+    print("Processing KMZ backbones...")
     gdf_backbone = gpd.read_file(kmz_path, driver='KML')
     gdf_backbone = gdf_backbone.to_crs(gdf_segments.crs)
-    gdf_backbone['backbone_id'] = gdf_backbone.index
-    gdf_backbone = gdf_backbone[['backbone_id','geometry']]
+    gdf_backbone['length_m'] = gdf_backbone.geometry.length
+    gdf_backbone = gdf_backbone[gdf_backbone['length_m'] >= small_segment_length_m].copy()
+    gdf_backbone['backbone_id'] = range(len(gdf_backbone))
+    gdf_backbone = gdf_backbone[['backbone_id', 'geometry', 'length_m']]
     
-    # Filter out small backbone reference roads
-    gdf_backbone['backbone_length_m'] = gdf_backbone.geometry.length
-    gdf_backbone = gdf_backbone[gdf_backbone['backbone_length_m'] >= small_segment_length_m].copy()
-    print(f"Filtered KMZ: {len(gdf_backbone)} backbones remain (min length {small_segment_length_m}m).")
-    
-    print("Merging shapefile and traffic data...")
-    # Using 'total' as a helper for some logic if needed, but we keep the multiples
+    os.makedirs(os.path.dirname(backbone_output_path), exist_ok=True)
+    gdf_backbone.to_parquet(backbone_output_path)
+
+    # 3. MERGE & ASSIGN
+    print("Joining traffic data and assigning to backbones...")
     gdf_merged = gdf_segments.merge(df_info, left_on='id_tramo', right_on='tramo')
-    # Create a helper 'total' column (average) just for the sindex query/sorting if needed, 
-    # but the aggregation will use the raw columns.
-    if traffic_cols:
-        gdf_merged['total'] = gdf_merged[traffic_cols].mean(axis=1)
-    else:
-        gdf_merged['total'] = 0
-    
-    gdf_merged['length_m'] = gdf_merged.geometry.length
-    
-    print("Assigning segments to nearest backbone road using centroids (Optimized)...")
-    # PERFORMANCE OPTIMIZATION: Use centroids for assignment
     gdf_centroids = gdf_merged.copy()
     gdf_centroids['geometry'] = gdf_centroids.geometry.centroid
     
-    # We use a max_distance to keep it fast
-    gdf_assigned_centroids = gpd.sjoin_nearest(
+    gdf_assigned = gpd.sjoin_nearest(
         gdf_centroids, 
         gdf_backbone[['backbone_id', 'geometry']], 
-        max_distance=500, # 2km max distance to road backbone
+        max_distance=500, 
         distance_col="dist_to_backbone"
     )
     
-    # Map back to original line geometries using explicit ID merge
     gdf_merged = gdf_merged.merge(
-        gdf_assigned_centroids[['id_tramo', 'backbone_id', 'dist_to_backbone']], 
+        gdf_assigned[['id_tramo', 'backbone_id', 'dist_to_backbone']], 
         on='id_tramo', 
         how='left'
-    )
-    # Filter segments that couldn't be matched within 2km (minor roads)
-    gdf_merged = gdf_merged.dropna(subset=['backbone_id'])
-    
-    print(f"Beginning simplification for {len(gdf_merged)} matched segments...")
-    
-    processed_groups = []
-    backbone_groups = list(gdf_merged.groupby('backbone_id'))
-    total_groups = len(backbone_groups)
-    
-    for i, (bib_id, group) in enumerate(backbone_groups):
-        if i % 200 == 0:
-            print(f"Processing backbone {i}/{total_groups}... (Elapsed: {time.time()-start_time:.1f}s)")
-            
-        group = group.copy().reset_index(drop=True)
-        
-        # We find clusters of segments that should be merged
-        # Faster cluster approach: 1km buffer for nearby joins
-        # For parallel joins, we use a 100m rule.
-        
-        # Create adjacency matrix based on thresholds
-        G = nx.Graph()
-        G.add_nodes_from(group.index)
-        
-        # Spatial Index query
-        sindex = group.sindex
-        
-        # We only need to check segments against their neighbors
-        for idx in group.index:
-            geom = group.at[idx, 'geometry']
-            length = group.at[idx, 'length_m']
-            
-            # Max possible search radius
-            search_rad = max(bridge_gap_threshold_m, parallel_threshold_m)
-            possible_indices = sindex.query(geom.buffer(search_rad))
-            
-            for other_idx in possible_indices:
-                if idx >= other_idx:
-                    continue
-                
-                other_geom = group.at[other_idx, 'geometry']
-                other_length = group.at[other_idx, 'length_m']
-                dist = geom.distance(other_geom)
-                
-                if dist < parallel_threshold_m:
-                    G.add_edge(idx, other_idx)
-                elif (length < small_segment_length_m or other_length < small_segment_length_m) and dist < bridge_gap_threshold_m:
-                    G.add_edge(idx, other_idx)
-        
-        for component in nx.connected_components(G):
-            subset = group.iloc[list(component)]
-            merged_geom = unary_union(subset.geometry)
-            
-            # linemerge joins LineStrings together if they are end-to-end
-            if not merged_geom.is_empty:
-                if isinstance(merged_geom, (MultiLineString, list)):
-                    try:
-                        merged_geom = linemerge(merged_geom)
-                    except Exception:
-                        pass  # Keep as MultiLineString if merge fails
-            
-            # Sum all individual total_ columns
-            traffic_sums = subset[traffic_cols].sum().to_dict()
-            
-            processed_entry = {
-                'backbone_id': bib_id,
-                'geometry': merged_geom,
-                'original_segment_count': len(subset)
-            }
-            # Merge the traffic sums into the entry
-            processed_entry.update(traffic_sums)
-            processed_groups.append(processed_entry)
+    ).dropna(subset=['backbone_id'])
 
-    print("Consolidating results...")
+    # 4. VECTORIZED INTERVAL CALCULATION
+    print(f"Calculating linear references for {len(gdf_merged)} segments...")
+    interval_data = []
+    
+    for bib_id, group in gdf_merged.groupby('backbone_id'):
+        backbone_geom = gdf_backbone[gdf_backbone['backbone_id'] == bib_id].geometry.iloc[0]
+        shapely.prepare(backbone_geom)
+        
+        segment_indices = group.index.tolist()
+        geoms = group.geometry.values
+        
+        start_pts = [Point(g.coords[0]) for g in geoms]
+        end_pts = [Point(g.coords[-1]) for g in geoms]
+        
+        start_dists = shapely.line_locate_point(backbone_geom, start_pts)
+        end_dists = shapely.line_locate_point(backbone_geom, end_pts)
+        
+        for i, idx in enumerate(segment_indices):
+            s, e = start_dists[i], end_dists[i]
+            s_min, s_max = (s, e) if s < e else (e, s)
+            interval_data.append({
+                'original_index': idx,
+                'start_m': s_min,
+                'end_m': s_max,
+                'interval_len': s_max - s_min
+            })
+            
+    df_intervals = pd.DataFrame(interval_data).set_index('original_index')
+    gdf_merged = gdf_merged.join(df_intervals[['start_m', 'end_m', 'interval_len']])
+
+    # 5. PARALLEL FUSION (Sequential + Contiguity)
+    print(f"Fusing and consolidating segments (Threshold={fusion_small_segment_m}m)...")
+    backbone_groups = [
+        (bid, grp, gdf_backbone[gdf_backbone['backbone_id'] == bid].geometry.iloc[0], traffic_cols, 
+         fusion_small_segment_m, fusion_gap_threshold_m)
+        for bid, grp in gdf_merged.groupby('backbone_id')
+    ]
+    
+    results_nested = Parallel(n_jobs=-1)(
+        delayed(process_backbone_group)(*args) for args in backbone_groups
+    )
+    processed_groups = [item for sublist in results_nested for item in sublist]
+
+    # 6. SAVE RESULTS
+    print("Consolidating and saving final network...")
     gdf_final = gpd.GeoDataFrame(processed_groups, crs=gdf_segments.crs)
+    if not gdf_final.empty:
+        gdf_final.sort_values(['backbone_id', 'master_start_m'], inplace=True)
+        gdf_final.insert(0, 'segment_id', range(len(gdf_final)))
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Calculate percentage for fusion segments
+    if not gdf_final.empty and not_short_col in gdf_final.columns:
+        final_pct_col = f"pct_not_short_{base_name}"
+        gdf_final[final_pct_col] = (gdf_final[not_short_col] / gdf_final[target_traffic_column]).fillna(0)
+    
     gdf_final.to_parquet(output_path)
-    print(f"Process Complete. Output: {len(gdf_final)} super-segments. Total Time: {time.time()-start_time:.1f}s")
+    
+    print(f"✨ Process Complete!")
+    print(f"   Output: {len(gdf_final)} super-segments.")
+    print(f"   Total Time: {time.time()-start_time:.1f}s")
 
 if __name__ == "__main__":
     main()
