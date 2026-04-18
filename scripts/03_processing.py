@@ -60,6 +60,7 @@ def run_step(step_name, config, force=False):
                 traffic_path=step_config['traffic_path'],
                 chargers_path=step_config['chargers_path'],
                 gas_stations_path=step_config['gas_stations_path'],
+                capacity_path=step_config['capacity_path'],
                 output_path=step_config['output_path'],
                 sub_steps=step_config.get('sub_steps', ["all"]),
                 traffic_columns=step_config.get('traffic_columns', ["total_max"]),

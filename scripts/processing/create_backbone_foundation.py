@@ -188,14 +188,37 @@ def assign_nearest_gas_stations(gdf_points, gdf_gas, max_distance=None):
         
     return gdf_result
 
+def assign_grid_capacity(gdf_points, gdf_capacity):
+    """
+    Assigns the nearest electrical substation capacity to each backbone point.
+    """
+    print(" - Assigning nearest electrical grid capacity...")
+    
+    if gdf_capacity.crs != gdf_points.crs:
+        gdf_capacity = gdf_capacity.to_crs(gdf_points.crs)
+        
+    gdf_result = gpd.sjoin_nearest(
+        gdf_points,
+        gdf_capacity[['capacity_kw', 'geometry']],
+        how='left',
+        distance_col='dist_substation_m'
+    )
+    
+    gdf_result = gdf_result.drop_duplicates(subset=['point_id'])
+    if 'index_right' in gdf_result.columns:
+        gdf_result = gdf_result.drop(columns=['index_right'])
+        
+    return gdf_result
+
 def main(
     roads_path, 
     traffic_path, 
     chargers_path, 
     gas_stations_path, 
+    capacity_path,
     output_path,
     sub_steps=["all"],
-    traffic_columns=["total_max"],
+    traffic_columns=["total_max", "short_max"],
     sampling_interval_m=200,
     buffer_radius_m=50,
     max_distance_proximity=None
@@ -235,6 +258,12 @@ def main(
         gdf_gas = gpd.read_parquet(gas_stations_path)
         gdf_points = assign_nearest_gas_stations(gdf_points, gdf_gas, max_distance_proximity)
 
+    # 5. Grid Capacity
+    if run_all or "capacity" in sub_steps:
+        print(f" - Loading standardized capacity from {capacity_path}...")
+        gdf_capacity = gpd.read_parquet(capacity_path)
+        gdf_points = assign_grid_capacity(gdf_points, gdf_capacity)
+
     print(f" - Saving final foundation dataset to {output_path}...")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     gdf_points.to_parquet(output_path)
@@ -249,5 +278,6 @@ if __name__ == "__main__":
         traffic_path="data/standardized/traffic.parquet",
         chargers_path="data/standardized/chargers.parquet",
         gas_stations_path="data/standardized/gas_stations.parquet",
+        capacity_path="data/standardized/electric_capacity.parquet",
         output_path="data/processed/backbone_foundation.parquet"
     )

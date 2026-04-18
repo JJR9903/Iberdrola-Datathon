@@ -92,14 +92,16 @@ roads_path = "data/standardized/roads.parquet"
 traffic_path = "data/standardized/traffic.parquet"
 chargers_path = "data/standardized/chargers.parquet"
 gas_stations_path = "data/standardized/gas_stations.parquet"
+capacity_path = "data/standardized/electric_capacity.parquet"
 output_path = "data/processed/backbone_foundation.parquet"
 traffic_columns = ["total_max", "short_max"]
 sampling_interval_m = 200
 buffer_radius_m = 50
-max_distance_proximity = 10000 
+max_distance_proximity = 100000 
 depends_on = [
     "data/standardized/roads.parquet", 
     "data/standardized/traffic.parquet", 
     "data/standardized/chargers.parquet", 
-    "data/standardized/gas_stations.parquet"
+    "data/standardized/gas_stations.parquet",
+    "data/standardized/electric_capacity.parquet"
 ]
