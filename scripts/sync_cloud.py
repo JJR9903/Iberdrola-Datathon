@@ -74,4 +74,11 @@ def sync_standardized_data(config_path="config.toml"):
     return fail_count == 0
 
 if __name__ == "__main__":
-    sync_standardized_data()
+    # Robust config loading: check parent dir if not in CWD
+    config_path = "config.toml"
+    if not os.path.exists(config_path):
+        potential_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "config.toml")
+        if os.path.exists(potential_path):
+            config_path = potential_path
+            
+    sync_standardized_data(config_path)

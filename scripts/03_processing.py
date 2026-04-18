@@ -1,22 +1,17 @@
-import sys
 import os
-import tomllib  # Built-in in Python 3.11+
-from pathlib import Path
+import sys
+import tomllib
 
-# Add scripts directory to path to allow direct imports
-sys.path.append(os.path.join(os.path.dirname(__file__), 'scripts'))
+# Add the current directory (scripts/) to allow module-based imports
+current_dir = os.path.dirname(os.path.realpath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
 try:
-    import process_chargers
-    import process_vehicle_registrations
-    import process_gas_stations
-    import process_electric_capacity
-    import merge_traffic_data
-    import process_road_segments
-    import analyze_charging_sites_proximity
-    import analyze_gas_stations_proximity
+    from processing import merge_traffic_data
+    from processing import create_backbone_foundation
 except ImportError as e:
-    print(f"Error importing scripts: {e}")
+    print(f"Error importing modules: {e}")
     sys.exit(1)
 
 def load_config(config_path="config.toml"):
@@ -54,59 +49,27 @@ def run_step(step_name, config, force=False):
     print(f"\n>>> Executing Step: {step_name}")
     
     try:
-        if step_name == "chargers":
-            process_chargers.main(
-                raw_xml_path=step_config['raw_path'],
-                parquet_output_path=step_config['output_path']
-            )
-        elif step_name == "vehicle_registrations":
-            process_vehicle_registrations.main(
-                dir_zip=step_config['raw_dir'],
-                output_parquet=step_config['output_path']
-            )
-        elif step_name == "gas_stations":
-            process_gas_stations.main(
-                raw_path=step_config['raw_path'],
-                output_path=step_config['output_path']
-            )
-        elif step_name == "electric_capacity":
-            process_electric_capacity.main(
-                raw_dir=step_config['raw_dir'],
-                output_path=step_config['output_path'],
-                files=step_config['files']
-            )
-        elif step_name == "traffic":
+        if step_name == "traffic":
             merge_traffic_data.main(
                 input_dir=step_config['raw_dir'],
                 output_path=step_config['output_path']
             )
-        elif step_name == "segments":
-            process_road_segments.main(
-                shp_path=step_config['shp_path'],
-                traffic_path=step_config['traffic_path'],
+        elif step_name == "backbone_foundation":
+            create_backbone_foundation.main(
                 kmz_path=step_config['kmz_path'],
+                traffic_shp_path=step_config['traffic_shp_path'],
+                traffic_parquet_path=step_config['traffic_parquet_path'],
+                chargers_path=step_config['chargers_path'],
+                gas_stations_path=step_config['gas_stations_path'],
                 output_path=step_config['output_path'],
-                backbone_output_path=step_config['backbone_output_path'],
-                small_segment_length_m=step_config['small_segment_length_m']
-            )
-        elif step_name == "proximity":
-            analyze_charging_sites_proximity.main(
-                charging_points_path=step_config['charging_points_path'],
-                road_network_path=step_config['road_network_path'],
-                backbone_roads_path=step_config['backbone_roads_path'],
-                output_path=step_config['output_path'],
-                max_distance=step_config['max_distance']
-            )
-        elif step_name == "gas_stations_proximity":
-            analyze_gas_stations_proximity.main(
-                raw_path=step_config['raw_path'],
-                road_network_path=step_config['road_network_path'],
-                backbone_roads_path=step_config['backbone_roads_path'],
-                output_path=step_config['output_path'],
-                max_distance=step_config['max_distance']
+                sub_steps=step_config.get('sub_steps', ["all"]),
+                traffic_columns=step_config.get('traffic_columns', ["total_max"]),
+                sampling_interval_m=step_config.get('sampling_interval_m', 200),
+                buffer_radius_m=step_config.get('buffer_radius_m', 50),
+                max_distance_proximity=step_config.get('max_distance_proximity', None)
             )
         else:
-            print(f"Error: Manual glue-code for step '{step_name}' is missing in main.py.")
+            print(f"Error: Manual glue-code for step '{step_name}' is missing in 03_processing.py.")
             return False
             
         return True
@@ -118,23 +81,22 @@ def main():
     """Main orchestrator entry point for processing."""
     print("=== Iberdrola Datathon: Data Processing Orchestrator ===\n")
     
-    config = load_config()
+    # Allow running from root if scripts/03_processing.py is called from root
+    config_path = "config.toml"
+    if not os.path.exists(config_path):
+        config_path = os.path.join("..", "config.toml")
+        
+    config = load_config(config_path)
     
     # Read execution settings
     execution = config.get('process_execution', config.get('execution', {}))
     steps_requested = execution.get('steps', ["all"])
     force_run = execution.get('force', False)
 
-    # Definitive order of processing steps
+    # Definitive order of processing steps (Simplified)
     canonical_order = [
-        "chargers", 
-        "vehicle_registrations", 
-        "gas_stations",
-        "electric_capacity", 
         "traffic", 
-        "segments", 
-        "proximity", 
-        "gas_stations_proximity"
+        "backbone_foundation"
     ]
     
     if "all" in steps_requested:

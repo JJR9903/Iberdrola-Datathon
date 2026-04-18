@@ -5,62 +5,61 @@ This project aims to optimize the deployment of electric vehicle (EV) charging i
 
 ---
 
-## 🚀 Quick Start: Data Access
-To ensure immediate reproducibility without needing to scrape external portals, all raw and standardized datasets are mirrored in our **GCP Data Bucket**. 
+---
 
-You can synchronize the official standardized "Silver Layer" directly into your local `data/` directory using our sync utility:
+## 📂 Project Structure
 
-```bash
-# Synchronize standardized datasets from GCP
-python3 sync_cloud_data.py
+The repository is organized into a sequential pipeline. All core logic and orchestrators are located in the `scripts/` directory, while interactive analysis is done in `notebooks/`.
+
+```text
+/ (Root)
+├── config.toml               # Single source of truth for all parameters
+├── notebooks/                # Analytical and visualization tools
+│   ├── 01_forecast.ipynb     # EV growth projections
+│   └── 02_backbone_analysis.ipynb
+└── scripts/
+    ├── 01_acquisition.py      # RAW layer ingestion
+    ├── 02_standardization.py  # SILVER layer transformation
+    ├── 03_processing.py       # GOLD layer foundation
+    ├── sync_cloud.py          # Data mirror utility
+    └── archive/               # Superseded legacy scripts
 ```
 
-> [!TIP]
-> If you are starting the repository from scratch, using `sync_cloud_data.py` is the fastest way to begin analysis. It skips the ingestion and standardization phases by fetching pre-computed results.
+## 🚀 Quick Start: Data Access
+
+To ensure immediate reproducibility, all standardized datasets are mirrored in our **GCP Data Bucket**. You can synchronize the official "Silver Layer" directly using:
+
+```bash
+# Sync standardized datasets from cloud
+python3 scripts/sync_cloud.py
+```
 
 ---
 
-## 🛠 Project Architecture & Orchestration
+## 🧪 Pipeline Orchestration
 
-The project uses a modular "Medallion Architecture" driven by specialized orchestrator scripts:
+The project follows a modular "Medallion Architecture" driven by a sequential pipeline:
 
-### 1. Cloud Data Sync (`sync_cloud_data.py`)
-The primary entry point for researchers. It fetches pre-processed standardized datasets from the project's cloud storage.
-- **Source**: `https://storage.googleapis.com/iberdrola-datathon/data/standardized/`
-- **Logic**: Intelligent skipping (only downloads missing files unless `force = true` in config).
+### 1. Ingestion (`scripts/01_acquisition.py`)
+Manages data fetching from ministry portals (MITMA, DGT, CNMC).
+- **Outputs**: `data/raw/`
 
-### 2. Raw Acquisition (`download.py`)
-Manages the ingestion of raw data from public sources and ministry portals. Use this if you want to refresh the source data from the ministries.
-- **Inputs**: Ministry Portals (MITMA, DGT, CNMC).
-- **Outputs**: `data/raw/<step_name>/`
+### 2. Standardization (`scripts/02_standardization.py`)
+Transforms raw files into clean, metric-projected (**EPSG:25830**) tabular datasets.
+- **Outputs**: `data/standardized/` (Parquet)
 
-### 3. Tabular Standardization (`standardization.py`)
-The "Silver Layer" processor. It transforms raw formats into clean, metric-projected (**EPSG:25830**) tabular datasets.
-- **Key Logic**: Advanced filtering (e.g., ultra-fast >100kW only), propulsion mapping, and spatial normalization.
-- **Outputs**: `data/standardized/` (GeoParquet / Parquet).
-
----
-
-## 📊 Data Catalog: Standardized Layer
-
-All standardized files are stored in `data/standardized/`. These represent the high-quality unified inputs for strategic analysis.
-
-| File Name | Description | Key Features |
-| :--- | :--- | :--- |
-| `roads.parquet` | Road backbone network. | `road_id`, `length_m`, metric geometry. |
-| `traffic.parquet` | Longitudinal traffic demand. | Joined geometry + daily `total` and `short` trip metrics. |
-| `chargers.parquet` | High-power infrastructure. | Filtered for **>100kW**; grouped by site. |
-| `electric_capacity.parquet` | Grid hosting capacity. | Unified Iberdrola, Endesa, and Viesgo maps in **kW**. |
-| `vehicle_registrations.parquet` | Filtered DGT Registrations. | Filtered for passenger cars and active propulsions. |
-| `gas_stations.parquet` | Fuel station network. | Standardized English attributes and IDs. |
+### 3. Processing (`scripts/03_processing.py`)
+Consolidates all layers into the final analytical backbone foundation.
+- **Outputs**: `data/processed/`
 
 ---
 
 ## 📓 Research & Analysis
-Advanced analysis is performed in the `notebooks/` and legacy `scripts/`:
-- `analyze_charging_sites_proximity.py`: Links sites to road segments.
-- `analyze_segment_intervals.py`: Calculates distance-based gaps ("Range Anxiety").
-- `EV_forecast.ipynb`: Time-series projections to 2027.
+
+Interactive analysis is performed via Jupyter Notebooks. Both notebooks include **automated synchronization**, allowing you to **fast-track the analysis** by bypassing the manual execution of the acquisition and standardization scripts.
+
+- **[01_forecast.ipynb](file:///Users/juanjose/Library/CloudStorage/GoogleDrive-jj.rincon@student.ie.edu/My%20Drive/Iberdrola%20Datathon/notebooks/01_forecast.ipynb)**: Time-series analysis and forecasting of EV registrations to 2027.
+- **[02_backbone_analysis.ipynb](file:///Users/juanjose/Library/CloudStorage/GoogleDrive-jj.rincon@student.ie.edu/My%20Drive/Iberdrola%20Datathon/notebooks/02_backbone_analysis.ipynb)**: Spatial analysis, discretization, and infrastructure gap evaluation.
 
 ---
 
@@ -70,16 +69,12 @@ This project uses `uv` for high-performance dependency management.
 
 ### 1. Environment Setup
 ```bash
-# Sync dependencies and create .venv
+# Sync dependencies and create 3.13+ environment
 uv sync
 ```
 
 ### 2. Configuration (`config.toml`)
-All orchestrators are controlled via the `config.toml` file. This allows you to:
-- **`cloud_sync`**: Toggle `force` download of cloud data.
-- **`standardization_execution`**: Select specific steps to rerun.
-- **`standardization_config`**: Centralize parameters like `metric_crs`.
-- **`steps`**: Modify source paths or processing parameters without touching code.
+All orchestrators are controlled via the `config.toml` file. You can toggle steps, modify buffer radii, or change sampling intervals without touching code.
 
 ---
 

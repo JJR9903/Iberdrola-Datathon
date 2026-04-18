@@ -3,9 +3,9 @@ import os
 import tomllib
 import importlib.util
 
-# Add scripts directory to path
-SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), 'scripts')
-sys.path.append(SCRIPTS_DIR)
+# SCRIPTS_DIR now refers to the standardization subdirectory
+SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'standardization')
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
 def load_config(config_path="config.toml"):
     """Loads the central configuration."""
@@ -45,7 +45,14 @@ def run_standardization_step(step_name, module_name, config_params):
 def main():
     print("=== Iberdrola Datathon: Data Standardization Orchestrator ===\n")
     
-    config = load_config()
+    # Robust config loading: check parent dir if not in CWD
+    config_path = "config.toml"
+    if not os.path.exists(config_path):
+        potential_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "config.toml")
+        if os.path.exists(potential_path):
+            config_path = potential_path
+
+    config = load_config(config_path)
     
     # Get execution control
     exec_cfg = config.get("standardization_execution", {})

@@ -119,8 +119,9 @@ def main(
         'site_id': 'count' # Use this as charger_count
     }).rename(columns={'site_id': 'charger_count'})
     
-    # Reset index and drop helper
-    gdf_final = gpd.GeoDataFrame(grouped.reset_index(drop=True), crs=metric_crs)
+    # Reset index to bring site_id back as a column and drop geom_str
+    gdf_final = grouped.reset_index().drop(columns=['geom_str'])
+    gdf_final = gpd.GeoDataFrame(gdf_final, crs=metric_crs)
     
     # 6. Save
     print(f" - Saving to {output_path}...")

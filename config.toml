@@ -1,18 +1,23 @@
+[download_execution]
+steps = ["all"]
+force = false
+
 [standardization_execution]
 # Steps: ["all"] or list like ["roads", "traffic", "chargers"]
 # Order: roads, traffic, chargers, electric_capacity, vehicle_registrations, gas_stations
 steps = ["all"]
+force = true
 
 [standardization_config]
 metric_crs = "EPSG:25830"
 
 [cloud_sync]
 base_url = "https://storage.googleapis.com/iberdrola-datathon/data/standardized"
-force = false
+force = true
 
 [process_execution]
-# Available steps: chargers, vehicle_registrations, gas_stations, electric_capacity, traffic, segments, proximity, gas_stations_proximity
-steps = ["electric_capacity", "traffic"]
+# Available steps: chargers, vehicle_registrations, gas_stations, electric_capacity, traffic, segments, backbone_foundation, proximity, gas_stations_proximity
+steps = ["backbone_foundation"]
 force = true
 
 # ==========================================
@@ -81,3 +86,22 @@ backbone_roads_path = "data/processed/backbone_roads.parquet"
 output_path = "data/processed/gas_stations_proximity.parquet"
 max_distance = 1000
 depends_on = ["data/standardized/gas_stations.parquet", "data/processed/integrated_road_network.parquet", "data/processed/backbone_roads.parquet"]
+
+[steps.backbone_foundation]
+sub_steps = ["all"]
+kmz_path = "data/raw/roads/roads.kmz"
+traffic_shp_path = "data/raw/traffic/geometria/Geometria_tramos.shp"
+traffic_parquet_path = "data/standardized/traffic.parquet"
+chargers_path = "data/standardized/chargers.parquet"
+gas_stations_path = "data/standardized/gas_stations.parquet"
+output_path = "data/processed/backbone_foundation.parquet"
+traffic_columns = ["total_max", "short_max"]
+sampling_interval_m = 200
+buffer_radius_m = 50
+max_distance_proximity = 10000 
+depends_on = [
+    "data/raw/roads/roads.kmz", 
+    "data/standardized/traffic.parquet", 
+    "data/standardized/chargers.parquet", 
+    "data/standardized/gas_stations.parquet"
+]

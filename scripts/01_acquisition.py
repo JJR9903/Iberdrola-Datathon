@@ -1,15 +1,16 @@
-import sys
 import os
+import sys
 import tomllib
-from pathlib import Path
 
-# Add scripts directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'scripts'))
+# Add the current directory (scripts/) to allow module-based imports
+current_dir = os.path.dirname(os.path.realpath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
 try:
-    import data_acquisition
+    from acquisition import data_acquisition
 except ImportError as e:
-    print(f"Error importing scripts: {e}")
+    print(f"Error importing modules: {e}")
     sys.exit(1)
 
 # ==========================================
@@ -134,7 +135,14 @@ def run_step(step_name, config, force=False):
 
 def main():
     print("=== Iberdrola Datathon: Data Acquisition Orchestrator ===\n")
-    config = load_config()
+    # Robust config loading: check parent dir if not in CWD
+    config_path = "config.toml"
+    if not os.path.exists(config_path):
+        potential_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "config.toml")
+        if os.path.exists(potential_path):
+            config_path = potential_path
+
+    config = load_config(config_path)
     
     exec_config = config.get('download_execution', {})
     steps_requested = exec_config.get('steps', ["all"])
