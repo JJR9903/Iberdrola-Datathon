@@ -88,10 +88,8 @@ max_distance = 1000
 depends_on = ["data/standardized/gas_stations.parquet", "data/processed/integrated_road_network.parquet", "data/processed/backbone_roads.parquet"]
 
 [steps.backbone_foundation]
-sub_steps = ["all"]
-kmz_path = "data/raw/roads/roads.kmz"
-traffic_shp_path = "data/raw/traffic/geometria/Geometria_tramos.shp"
-traffic_parquet_path = "data/standardized/traffic.parquet"
+roads_path = "data/standardized/roads.parquet"
+traffic_path = "data/standardized/traffic.parquet"
 chargers_path = "data/standardized/chargers.parquet"
 gas_stations_path = "data/standardized/gas_stations.parquet"
 output_path = "data/processed/backbone_foundation.parquet"
@@ -100,7 +98,7 @@ sampling_interval_m = 200
 buffer_radius_m = 50
 max_distance_proximity = 10000 
 depends_on = [
-    "data/raw/roads/roads.kmz", 
+    "data/standardized/roads.parquet", 
     "data/standardized/traffic.parquet", 
     "data/standardized/chargers.parquet", 
     "data/standardized/gas_stations.parquet"

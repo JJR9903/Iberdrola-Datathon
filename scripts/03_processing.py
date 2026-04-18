@@ -56,9 +56,8 @@ def run_step(step_name, config, force=False):
             )
         elif step_name == "backbone_foundation":
             create_backbone_foundation.main(
-                kmz_path=step_config['kmz_path'],
-                traffic_shp_path=step_config['traffic_shp_path'],
-                traffic_parquet_path=step_config['traffic_parquet_path'],
+                roads_path=step_config['roads_path'],
+                traffic_path=step_config['traffic_path'],
                 chargers_path=step_config['chargers_path'],
                 gas_stations_path=step_config['gas_stations_path'],
                 output_path=step_config['output_path'],

@@ -1,42 +1,27 @@
 import geopandas as gpd
 import pandas as pd
-import fiona
 import numpy as np
 import os
 import time
 
-# Enable KML driver
-try:
-    fiona.drvsupport.supported_drivers['KML'] = 'rw'
-except Exception:
-    pass
-
-def discretize_backbone_roads(kmz_path, sampling_interval_m=200):
+def discretize_backbone_roads(gdf_roads, sampling_interval_m=200):
     """
-    Converts LineStrings from a KMZ file into a series of Points along their path.
+    Converts LineStrings from a GeoDataFrame into a series of Points along their path.
     Each point stores the distance from the line's start (m_ref).
+    
+    Args:
+        gdf_roads: GeoDataFrame containing standardized backbone roads (from roads.parquet).
+                   Expected columns: 'road_id', 'geometry'.
+        sampling_interval_m: Interval in meters between successive points.
     """
     print(f" - Discretizing backbones into points (Interval={sampling_interval_m}m)...")
-    gdf_backbone = gpd.read_file(kmz_path, driver='KML')
     
-    # Extract attributes from HTML description (preserving backbone metadata)
-    gdf_backbone["route_name"] = gdf_backbone["description"].str.extract(
-        r"<td>Carretera</td>\s*<td>([^<]+)</td>", expand=False
-    )
-    gdf_backbone["tipo_via"] = gdf_backbone["description"].str.extract(
-        r"<td>Tipo_de_via</td>\s*<td>([^<]+)</td>", expand=False
-    )
-    
-    # Preserve original ID as backbone_id
-    gdf_backbone = gdf_backbone.rename(columns={'id': 'backbone_id'})
-    
-    # Ensure metric CRS or project to local UTM (assuming EPSG:3042 for Spain or as per project)
-    # Using 3042 as default for this project unless specified
-    if gdf_backbone.crs != "EPSG:3042":
-        gdf_backbone = gdf_backbone.to_crs(epsg=3042)
+    # Ensure metric CRS (assuming roads are already projected in standardization)
+    if gdf_roads.crs is None:
+        gdf_roads.set_crs(epsg=3042, inplace=True)
     
     points_data = []
-    for _, row in gdf_backbone.iterrows():
+    for _, row in gdf_roads.iterrows():
         geom = row.geometry
         if geom is None or geom.is_empty:
             continue
@@ -56,7 +41,11 @@ def discretize_backbone_roads(kmz_path, sampling_interval_m=200):
             entry['m_ref'] = round(d, 2)
             points_data.append(entry)
             
-    gdf_pts = gpd.GeoDataFrame(points_data, crs=gdf_backbone.crs)
+    gdf_pts = gpd.GeoDataFrame(points_data, crs=gdf_roads.crs)
+    
+    # Maintain columns or ensure they exist
+    if 'road_id' in gdf_pts.columns:
+        gdf_pts = gdf_pts.rename(columns={'road_id': 'backbone_id'})
     
     # Create unique point IDs
     gdf_pts['point_idx'] = gdf_pts.groupby('backbone_id').cumcount()
@@ -68,44 +57,41 @@ def discretize_backbone_roads(kmz_path, sampling_interval_m=200):
     
     return gdf_pts
 
-def map_traffic_to_points(gdf_points, shp_path, traffic_parquet_path, traffic_columns=["total_max"], buffer_radius_m=50):
+def map_traffic_to_points(gdf_points, gdf_traffic, traffic_columns=["total_max"], buffer_radius_m=50):
     """
-    Maps traffic intensity metrics (e.g. total and short) from road segments to backbone points.
+    Maps traffic intensity metrics from standardized traffic segments to backbone points.
+    
+    Args:
+        gdf_points: GeoDataFrame of discretized backbone points.
+        gdf_traffic: GeoDataFrame of standardized traffic segments (from traffic.parquet).
+        traffic_columns: List of traffic intensity columns to map.
+        buffer_radius_m: Radius to buffer points for spatial intersection.
     """
     print(f" - Mapping traffic columns {traffic_columns} (Buffer={buffer_radius_m}m)...")
     
-    # Load segment geometries and traffic info
-    gdf_segments = gpd.read_file(shp_path)
-    if gdf_segments.crs is None:
-        gdf_segments.set_crs(3042, inplace=True)
-    elif gdf_segments.crs != gdf_points.crs:
-        gdf_segments = gdf_segments.to_crs(gdf_points.crs)
+    if gdf_traffic.crs != gdf_points.crs:
+        gdf_traffic = gdf_traffic.to_crs(gdf_points.crs)
         
-    df_traffic = pd.read_parquet(traffic_parquet_path)
-    
     # Validate requested columns
-    available_cols = [c for c in traffic_columns if c in df_traffic.columns]
+    available_cols = [c for c in traffic_columns if c in gdf_traffic.columns]
     if not available_cols:
         print(f"   Warning: None of the requested columns {traffic_columns} were found. Skipping traffic mapping.")
         return gdf_points
         
     print(f"   Mapping columns: {available_cols}")
 
-    # Pre-clean IDs for join
-    gdf_segments['id_tramo'] = gdf_segments['id_tramo'].astype(str)
-    df_traffic['traffic_segment_id'] = df_traffic['traffic_segment_id'].astype(str)
-    
-    # Join traffic info to segment geometries
-    # Drop geometry from traffic to avoid duplicates during merge
-    gdf_merged = gdf_segments.merge(df_traffic.drop(columns=['geometry'], errors='ignore'), left_on='id_tramo', right_on='traffic_segment_id')
+    # Ensure ID columns are strings for merging
+    if 'traffic_segment_id' in gdf_traffic.columns:
+        gdf_traffic['traffic_segment_id'] = gdf_traffic['traffic_segment_id'].astype(str)
     
     # 1. Spatial Join with Buffer
     gdf_pts_buffered = gdf_points.copy()
     gdf_pts_buffered['geometry'] = gdf_pts_buffered.geometry.buffer(buffer_radius_m)
     
+    # Use spatial join to find segments near points
     joined = gpd.sjoin(
         gdf_pts_buffered[['point_id', 'backbone_id', 'point_idx', 'geometry']], 
-        gdf_merged[['id_tramo', 'geometry'] + available_cols], 
+        gdf_traffic[['traffic_segment_id', 'geometry'] + available_cols], 
         how='inner', 
         predicate='intersects'
     )
@@ -116,8 +102,9 @@ def map_traffic_to_points(gdf_points, shp_path, traffic_parquet_path, traffic_co
             gdf_points[col] = 0.0
         return gdf_points
 
-    # 2. Neighbor Validation Filter
-    joined['has_neighbor'] = joined.groupby(['id_tramo', 'backbone_id'])['point_idx'].transform(
+    # 2. Neighbor Validation Filter (Longitudinal Persistence)
+    # A segment is valid for a backbone road if it touches at least two adjacent points
+    joined['has_neighbor'] = joined.groupby(['traffic_segment_id', 'backbone_id'])['point_idx'].transform(
         lambda x: x.isin(x + 1) | x.isin(x - 1)
     )
     joined_filtered = joined[joined['has_neighbor']].copy()
@@ -146,17 +133,15 @@ def map_traffic_to_points(gdf_points, shp_path, traffic_parquet_path, traffic_co
     
     return gdf_final
 
-def assign_nearest_charging_stations(gdf_points, chargers_parquet_path, max_distance=None):
+def assign_nearest_charging_stations(gdf_points, gdf_chargers, max_distance=None):
     """
     Assigns the nearest ultra-fast charging station site_id and distance.
     """
     print(f" - Assigning nearest charging stations (MaxDist={max_distance})...")
-    gdf_chargers = gpd.read_parquet(chargers_parquet_path)
     
     if gdf_chargers.crs != gdf_points.crs:
         gdf_chargers = gdf_chargers.to_crs(gdf_points.crs)
         
-    # We now have site_id!
     cols_to_keep = ['site_id', 'geometry']
     gdf_chargers_subset = gdf_chargers[cols_to_keep].rename(columns={
         'site_id': 'nearest_charger_id'
@@ -176,12 +161,11 @@ def assign_nearest_charging_stations(gdf_points, chargers_parquet_path, max_dist
         
     return gdf_result
 
-def assign_nearest_gas_stations(gdf_points, gas_stations_parquet_path, max_distance=None):
+def assign_nearest_gas_stations(gdf_points, gdf_gas, max_distance=None):
     """
     Assigns the nearest gas station station_id and distance.
     """
     print(f" - Assigning nearest gas stations (MaxDist={max_distance})...")
-    gdf_gas = gpd.read_parquet(gas_stations_parquet_path)
     
     if gdf_gas.crs != gdf_points.crs:
         gdf_gas = gdf_gas.to_crs(gdf_points.crs)
@@ -205,9 +189,8 @@ def assign_nearest_gas_stations(gdf_points, gas_stations_parquet_path, max_dista
     return gdf_result
 
 def main(
-    kmz_path, 
-    traffic_shp_path, 
-    traffic_parquet_path, 
+    roads_path, 
+    traffic_path, 
     chargers_path, 
     gas_stations_path, 
     output_path,
@@ -218,27 +201,39 @@ def main(
     max_distance_proximity=None
 ):
     """
-    Orchestrates the creation of the backbone foundation points.
+    Orchestrates the creation of the backbone foundation points loading from paths.
     """
     start_time = time.time()
     print("🚀 Starting Backbone Foundation Creation...")
     
     run_all = "all" in sub_steps
     
+    # 1. Road Discretization
     if run_all or "discretize" in sub_steps:
-        gdf_points = discretize_backbone_roads(kmz_path, sampling_interval_m)
+        print(f" - Loading standardized roads from {roads_path}...")
+        gdf_roads = gpd.read_parquet(roads_path)
+        gdf_points = discretize_backbone_roads(gdf_roads, sampling_interval_m)
     else:
         print(f" - Skipping discretization. Loading existing points from {output_path}...")
         gdf_points = gpd.read_parquet(output_path)
 
+    # 2. Traffic Mapping
     if run_all or "traffic" in sub_steps:
-        gdf_points = map_traffic_to_points(gdf_points, traffic_shp_path, traffic_parquet_path, traffic_columns, buffer_radius_m)
+        print(f" - Loading standardized traffic from {traffic_path}...")
+        gdf_traffic = gpd.read_parquet(traffic_path)
+        gdf_points = map_traffic_to_points(gdf_points, gdf_traffic, traffic_columns, buffer_radius_m)
 
+    # 3. Charger Proximity
     if run_all or "chargers" in sub_steps:
-        gdf_points = assign_nearest_charging_stations(gdf_points, chargers_path, max_distance_proximity)
+        print(f" - Loading standardized chargers from {chargers_path}...")
+        gdf_chargers = gpd.read_parquet(chargers_path)
+        gdf_points = assign_nearest_charging_stations(gdf_points, gdf_chargers, max_distance_proximity)
 
+    # 4. Gas Station Proximity
     if run_all or "gas_stations" in sub_steps:
-        gdf_points = assign_nearest_gas_stations(gdf_points, gas_stations_path, max_distance_proximity)
+        print(f" - Loading standardized gas stations from {gas_stations_path}...")
+        gdf_gas = gpd.read_parquet(gas_stations_path)
+        gdf_points = assign_nearest_gas_stations(gdf_points, gdf_gas, max_distance_proximity)
 
     print(f" - Saving final foundation dataset to {output_path}...")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -250,9 +245,8 @@ def main(
 
 if __name__ == "__main__":
     main(
-        kmz_path="data/raw/roads/roads.kmz",
-        traffic_shp_path="data/raw/traffic/geometria/Geometria_tramos.shp",
-        traffic_parquet_path="data/standardized/traffic.parquet",
+        roads_path="data/standardized/roads.parquet",
+        traffic_path="data/standardized/traffic.parquet",
         chargers_path="data/standardized/chargers.parquet",
         gas_stations_path="data/standardized/gas_stations.parquet",
         output_path="data/processed/backbone_foundation.parquet"
