@@ -118,6 +118,11 @@ def map_traffic_to_points(gdf_points, gdf_traffic, traffic_columns=["total_max"]
     # 3. Sum Traffic per Point
     traffic_summary = joined_filtered.groupby('point_id')[available_cols].sum().reset_index()
     
+    # Drop existing traffic columns if they exist to avoid suffixes (_x, _y) during merge
+    existing_traffic_cols = [c for c in available_cols if c in gdf_points.columns]
+    if existing_traffic_cols:
+        gdf_points = gdf_points.drop(columns=existing_traffic_cols)
+
     # Merge back to original points
     gdf_final = gdf_points.merge(traffic_summary, on='point_id', how='left')
     gdf_final[available_cols] = gdf_final[available_cols].fillna(0)
@@ -218,7 +223,7 @@ def main(
     capacity_path,
     output_path,
     sub_steps=["all"],
-    traffic_columns=["total_max", "short_max"],
+    traffic_columns=["total_max", "short_max", "medio_max"],
     sampling_interval_m=200,
     buffer_radius_m=50,
     max_distance_proximity=None

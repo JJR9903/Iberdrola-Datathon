@@ -45,13 +45,15 @@ def main(
         date_str = match.group(1)
         total_col = f"total_{date_str}"
         short_col = f"short_{date_str}"
+        medio_col = f"medio_{date_str}"
         
         try:
             df = pl.scan_csv(file_path, separator=';') \
                 .select([
                     pl.col("tramo").cast(pl.Utf8),
                     pl.col("total").alias(total_col),
-                    pl.col("corto").alias(short_col)
+                    pl.col("corto").alias(short_col),
+                    pl.col("medio").alias(medio_col)
                 ])
             dfs.append(df)
         except Exception as e:
@@ -70,10 +72,12 @@ def main(
     final_traffic_df = merged_traffic.collect()
     total_cols = [c for c in final_traffic_df.columns if c.startswith("total_")]
     short_cols = [c for c in final_traffic_df.columns if c.startswith("short_")]
+    medio_cols = [c for c in final_traffic_df.columns if c.startswith("medio_")]
     
     final_traffic_df = final_traffic_df.with_columns([
         pl.max_horizontal(total_cols).alias("total_max"),
-        pl.max_horizontal(short_cols).alias("short_max")
+        pl.max_horizontal(short_cols).alias("short_max"),
+        pl.max_horizontal(medio_cols).alias("medio_max")
     ])
 
     # 2. Load Geometry
